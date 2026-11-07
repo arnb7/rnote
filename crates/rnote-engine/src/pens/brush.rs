@@ -18,6 +18,7 @@ use rnote_compose::builders::{
 use rnote_compose::eventresult::{EventPropagation, EventResult};
 use rnote_compose::penevent::{PenEvent, PenProgress};
 use rnote_compose::penpath::{Element, Segment};
+use rnote_compose::shapes::Shapeable;
 use std::time::Instant;
 
 #[derive(Debug)]
@@ -27,18 +28,21 @@ enum BrushState {
         path_builder: Box<dyn Buildable<Emit = Segment>>,
         current_stroke_key: StrokeKey,
         preview_style: Style,
+        start_time: Instant,
     },
 }
 
 #[derive(Debug)]
 pub struct Brush {
     state: BrushState,
+    hover_element: Option<Element>,
 }
 
 impl Default for Brush {
     fn default() -> Self {
         Self {
             state: BrushState::Idle,
+            hover_element: None,
         }
     }
 }
@@ -120,6 +124,7 @@ impl PenBehaviour for Brush {
                         ),
                         current_stroke_key,
                         preview_style,
+                        start_time: now,
                     };
 
                     EventResult {
@@ -128,6 +133,7 @@ impl PenBehaviour for Brush {
                         progress: PenProgress::InProgress,
                     }
                 } else {
+                    self.hover_element = None;
                     EventResult {
                         handled: false,
                         propagate: EventPropagation::Proceed,
@@ -135,11 +141,22 @@ impl PenBehaviour for Brush {
                     }
                 }
             }
-            (BrushState::Idle, _) => EventResult {
-                handled: false,
-                propagate: EventPropagation::Proceed,
-                progress: PenProgress::Idle,
-            },
+            (BrushState::Idle, PenEvent::Proximity { element, .. }) => {
+                self.hover_element = Some(element);
+                EventResult {
+                    handled: false,
+                    propagate: EventPropagation::Proceed,
+                    progress: PenProgress::Idle,
+                }
+            }
+            (BrushState::Idle, _) => {
+                self.hover_element = None;
+                EventResult {
+                    handled: false,
+                    propagate: EventPropagation::Proceed,
+                    progress: PenProgress::Idle,
+                }
+            }
             (
                 BrushState::Drawing {
                     current_stroke_key, ..
@@ -185,6 +202,7 @@ impl PenBehaviour for Brush {
                 BrushState::Drawing {
                     path_builder,
                     current_stroke_key,
+                    start_time,
                     ..
                 },
                 pen_event,
@@ -258,6 +276,196 @@ impl PenBehaviour for Brush {
                             );
                         }
 
+                        // Check for Scribble Erase (G1)
+                        let scribble_config = engine_view
+                            .config
+                            .pens_config
+                            .brush_config
+                            .scribble_config
+                            .clone();
+
+                        let mut stroke_points = Vec::new();
+                        if let Some(Stroke::BrushStroke(brushstroke)) =
+                            engine_view.store.get_stroke_ref(*current_stroke_key)
+                        {
+                            stroke_points.push(brushstroke.path.start.pos);
+                            for seg in &brushstroke.path.segments {
+                                match seg {
+                                    Segment::LineTo { end } => stroke_points.push(end.pos),
+                                    Segment::QuadBezTo { cp, end } => {
+                                        stroke_points.push(*cp);
+                                        stroke_points.push(end.pos);
+                                    }
+                                    Segment::CubBezTo { cp1, cp2, end } => {
+                                        stroke_points.push(*cp1);
+                                        stroke_points.push(*cp2);
+                                        stroke_points.push(end.pos);
+                                    }
+                                }
+                            }
+                        }
+
+                        let duration_secs = (now - *start_time).as_secs_f64();
+                        let scribble_analysis =
+                            if scribble_config.enable && stroke_points.len() >= 4 {
+                                crate::pens::ScribbleDetector::analyze(
+                                    &stroke_points,
+                                    duration_secs,
+                                    &scribble_config,
+                                )
+                            } else {
+                                crate::pens::ScribbleAnalysis::default()
+                            };
+
+                        if scribble_analysis.is_scribble {
+                            let scribble_bounds = scribble_analysis.bounds;
+                            let candidate_keys: Vec<StrokeKey> = engine_view
+                                .store
+                                .keys_unordered_intersecting_bounds(scribble_bounds)
+                                .into_iter()
+                                .filter(|&k| k != *current_stroke_key)
+                                .collect();
+
+                            let mut candidate_points = Vec::new();
+                            for &k in &candidate_keys {
+                                if let Some(Stroke::BrushStroke(s)) =
+                                    engine_view.store.get_stroke_ref(k)
+                                {
+                                    candidate_points.push(s.path.start.pos);
+                                    for seg in &s.path.segments {
+                                        match seg {
+                                            Segment::LineTo { end } => {
+                                                candidate_points.push(end.pos);
+                                            }
+                                            Segment::QuadBezTo { cp, end } => {
+                                                candidate_points.push(*cp);
+                                                candidate_points.push(end.pos);
+                                            }
+                                            Segment::CubBezTo { cp1, cp2, end } => {
+                                                candidate_points.push(*cp1);
+                                                candidate_points.push(*cp2);
+                                                candidate_points.push(end.pos);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if crate::pens::ScribbleDetector::passes_ink_gate(
+                                &stroke_points,
+                                &candidate_points,
+                                scribble_config.ink_gate_proximity_px,
+                                scribble_config.ink_gate_threshold,
+                            ) {
+                                let keys_to_trash = match scribble_config.mode {
+                                    crate::pens::ScribbleMode::Stroke => candidate_keys,
+                                    crate::pens::ScribbleMode::Word => {
+                                        let stroke_bounds_and_keys: Vec<(StrokeKey, Aabb)> =
+                                            candidate_keys
+                                                .into_iter()
+                                                .filter_map(|k| {
+                                                    engine_view
+                                                        .store
+                                                        .get_stroke_ref(k)
+                                                        .map(|s| (k, s.bounds()))
+                                                })
+                                                .collect();
+                                        let clusters =
+                                            crate::pens::scribble::WordGroup::cluster_words(
+                                                &stroke_bounds_and_keys,
+                                                20.0,
+                                                1.2,
+                                            );
+                                        let mut trashing = Vec::new();
+                                        for cluster in clusters {
+                                            if cluster.bounds.intersects(&scribble_bounds) {
+                                                trashing.extend(cluster.keys);
+                                            }
+                                        }
+                                        trashing
+                                    }
+                                    crate::pens::ScribbleMode::Line => candidate_keys,
+                                };
+
+                                if !keys_to_trash.is_empty() {
+                                    engine_view.store.set_trashed_keys(&keys_to_trash, true);
+                                    engine_view.store.remove_stroke(*current_stroke_key);
+                                    self.state = BrushState::Idle;
+                                    widget_flags |= engine_view.store.record(Instant::now());
+                                    widget_flags.store_modified = true;
+                                    return (
+                                        EventResult {
+                                            handled,
+                                            propagate,
+                                            progress: PenProgress::Finished,
+                                        },
+                                        widget_flags,
+                                    );
+                                }
+                            }
+                        }
+
+                        // Check for Hold-to-Snap Shape (G2 & G12)
+                        let shape_snap_config = engine_view
+                            .config
+                            .pens_config
+                            .brush_config
+                            .shape_snap_config
+                            .clone();
+
+                        let snapped_shape = if shape_snap_config.enable && stroke_points.len() >= 4
+                        {
+                            crate::pens::ShapeRecognizer::classify(
+                                &stroke_points,
+                                &shape_snap_config,
+                            )
+                        } else {
+                            None
+                        };
+
+                        if let Some(snapped) = snapped_shape {
+                            let shape = snapped.into_rnote_shape();
+                            let current_style = engine_view
+                                .config
+                                .pens_config
+                                .brush_config
+                                .style_for_current_options();
+                            let shape_stroke = Stroke::ShapeStroke(
+                                crate::strokes::ShapeStroke::new(shape, current_style),
+                            );
+
+                            if let Some(stroke_slot) =
+                                engine_view.store.get_stroke_mut(*current_stroke_key)
+                            {
+                                *stroke_slot = shape_stroke;
+                            }
+
+                            engine_view
+                                .store
+                                .update_geometry_for_stroke(*current_stroke_key);
+                            engine_view.store.regenerate_rendering_for_stroke_threaded(
+                                engine_view.tasks_tx.clone(),
+                                *current_stroke_key,
+                                engine_view.camera.viewport(),
+                                engine_view.camera.image_scale(),
+                            );
+                            widget_flags |= engine_view
+                                .document
+                                .resize_autoexpand(engine_view.store, engine_view.camera);
+
+                            self.state = BrushState::Idle;
+                            widget_flags |= engine_view.store.record(Instant::now());
+                            widget_flags.store_modified = true;
+                            return (
+                                EventResult {
+                                    handled,
+                                    propagate,
+                                    progress: PenProgress::Finished,
+                                },
+                                widget_flags,
+                            );
+                        }
+
                         if let Some(Stroke::BrushStroke(brushstroke)) =
                             engine_view.store.get_stroke_mut(*current_stroke_key)
                         {
@@ -312,7 +520,18 @@ impl DrawableOnDoc for Brush {
             .style_for_current_options();
 
         match &self.state {
-            BrushState::Idle => None,
+            BrushState::Idle => {
+                if let Some(hover) = self.hover_element {
+                    let width = style.stroke_width();
+                    let radius = (width * 0.5).max(2.0);
+                    Some(Aabb::from_half_extents(
+                        hover.pos,
+                        p2d::math::Vector2::new(radius + 4.0, radius + 4.0),
+                    ))
+                } else {
+                    None
+                }
+            }
             BrushState::Drawing { path_builder, .. } => {
                 path_builder.bounds(&style, engine_view.camera.zoom())
             }
@@ -327,7 +546,22 @@ impl DrawableOnDoc for Brush {
         cx.save().map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
         match &self.state {
-            BrushState::Idle => {}
+            BrushState::Idle => {
+                if let Some(hover) = self.hover_element {
+                    use rnote_compose::ext::Vector2Ext;
+                    let style = engine_view
+                        .config
+                        .pens_config
+                        .brush_config
+                        .style_for_current_options();
+                    let width = style.stroke_width();
+                    let radius = (width * 0.5).max(1.5);
+                    let outline_width = 1.0 / engine_view.camera.total_zoom();
+                    let circle = kurbo::Circle::new(hover.pos.to_kurbo_point(), radius);
+                    let ring_color = piet::Color::rgba8(120, 120, 120, 180);
+                    cx.stroke(circle, &ring_color, outline_width);
+                }
+            }
             BrushState::Drawing {
                 path_builder,
                 preview_style,

@@ -18,6 +18,7 @@ pub mod engine;
 pub mod ext;
 pub mod fileformats;
 pub mod image;
+pub mod pen_goodies;
 pub mod pens;
 pub mod selectioncollision;
 pub mod snap;
@@ -37,6 +38,10 @@ pub use drawable::Drawable;
 pub use drawable::DrawableOnDoc;
 pub use engine::Engine;
 pub use image::Image;
+pub use pen_goodies::{
+    DoubleClickDetector, HardwareTelemetry, PalmRejectionGuard, QuickCycler, RadialMenu,
+    RadialMenuSlice, TouchRejectionState,
+};
 pub use pens::PenHolder;
 pub use selectioncollision::SelectionCollision;
 pub use store::StrokeStore;

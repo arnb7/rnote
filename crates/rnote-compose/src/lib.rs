@@ -19,12 +19,16 @@ pub mod ext;
 pub mod penevent;
 /// module for pen paths
 pub mod penpath;
+/// module for pressure curve profiles and presets
+pub mod pressure_curve;
 /// utilities for serializing / deserializing
 pub mod serialize;
 /// module for shapes
 pub mod shapes;
 /// module for splitorder
 pub mod splitorder;
+/// module for stroke smoothing and stabilization
+pub mod stabilizer;
 /// module for styles, that can be applied onto shapes
 pub mod style;
 /// module for transformationable trait
@@ -38,8 +42,10 @@ pub use constraints::Constraints;
 pub use eventresult::EventResult;
 pub use penevent::PenEvent;
 pub use penpath::PenPath;
+pub use pressure_curve::{PressureProfile, PressureResponseType};
 pub use shapes::Shape;
 pub use splitorder::SplitOrder;
+pub use stabilizer::{LazyBrush, LowPassFilter, OneEuroFilter};
 pub use style::Style;
 pub use transformable::Transformable;
 

@@ -110,6 +110,10 @@ pub struct BrushConfig {
     pub solid_options: SolidOptions,
     #[serde(rename = "textured_options")]
     pub textured_options: TexturedOptions,
+    #[serde(rename = "scribble_config")]
+    pub scribble_config: crate::pens::ScribbleConfig,
+    #[serde(rename = "shape_snap_config")]
+    pub shape_snap_config: crate::pens::ShapeSnapConfig,
 }
 
 impl BrushConfig {
