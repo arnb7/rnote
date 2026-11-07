@@ -12,6 +12,7 @@
 #[cfg(feature = "ui")]
 pub mod audioplayer;
 pub mod camera;
+pub mod device_profile;
 pub mod document;
 pub mod drawable;
 pub mod engine;
@@ -33,6 +34,9 @@ pub mod widgetflags;
 #[cfg(feature = "ui")]
 pub use audioplayer::AudioPlayer;
 pub use camera::Camera;
+pub use device_profile::{
+    CanvasAspectMode, DeviceProfile, EvdevCanvasGrabber, ExpressKeyAction, StylusButtonAction,
+};
 pub use document::Document;
 pub use drawable::Drawable;
 pub use drawable::DrawableOnDoc;
