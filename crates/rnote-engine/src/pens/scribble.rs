@@ -69,14 +69,14 @@ impl Default for ScribbleConfig {
     fn default() -> Self {
         Self {
             enable: true,
-            sensitivity: 4,
+            sensitivity: 6,
             mode: ScribbleMode::Word,
             strike_through: false,
-            path_to_diag_ratio: 2.5,
-            coverage_threshold: 0.35,
-            ink_gate_threshold: 0.35,
+            path_to_diag_ratio: 3.0,
+            coverage_threshold: 0.40,
+            ink_gate_threshold: 0.40,
             ink_gate_proximity_px: 16.0,
-            max_duration_secs: 2.2,
+            max_duration_secs: 2.5,
         }
     }
 }
@@ -235,7 +235,7 @@ impl ScribbleDetector {
             return 0;
         }
 
-        let hysteresis = (span * 0.22).max(7.0);
+        let hysteresis = (span * 0.24).max(8.0);
         let mut reversals = 0;
         enum Dir {
             Init,
@@ -361,8 +361,8 @@ impl ScribbleDetector {
 
         // 3. Count directional reversals: combine angle reversals (for sharp corners)
         // and principal axis oscillations (for smoothed/modeled curves).
-        let reversal_ang = Self::count_reversals(&simplified, -0.55); // turning angle > ~123°
-        let reversal_pca = Self::count_principal_reversals(&resampled, 14.0);
+        let reversal_ang = Self::count_reversals(&simplified, -0.60); // turning angle > ~127°
+        let reversal_pca = Self::count_principal_reversals(&resampled, 16.0);
         let reversal_count = reversal_ang.max(reversal_pca);
 
         // Duration guard: Scribbles are rapid gestures (< max_duration_secs)
@@ -589,7 +589,7 @@ mod tests {
     #[test]
     fn test_synthetic_zigzag_positive() {
         let config = ScribbleConfig::default();
-        let zigzag = generate_zigzag(5, 80.0, 30.0, Vector2::new(100.0, 100.0), 10);
+        let zigzag = generate_zigzag(8, 80.0, 30.0, Vector2::new(100.0, 100.0), 10);
         let analysis = ScribbleDetector::analyze(&zigzag, 0.45, &config);
 
         assert!(
@@ -611,7 +611,7 @@ mod tests {
     fn test_synthetic_hatching_positive() {
         let config = ScribbleConfig::default();
         let mut hatching = Vec::new();
-        for i in 0..6 {
+        for i in 0..8 {
             let x = 100.0 + i as f64 * 8.0;
             if i % 2 == 0 {
                 hatching.push(Vector2::new(x, 50.0));
@@ -733,7 +733,7 @@ mod tests {
     #[test]
     fn test_property_rotation_and_scale_invariance() {
         let config = ScribbleConfig::default();
-        let base_zigzag = generate_zigzag(6, 90.0, 35.0, Vector2::new(50.0, 50.0), 8);
+        let base_zigzag = generate_zigzag(8, 90.0, 35.0, Vector2::new(50.0, 50.0), 8);
 
         // Test scaling by 0.5x, 1.5x, 2.5x
         for &scale in &[0.5, 1.0, 1.8, 2.5] {

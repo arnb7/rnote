@@ -46,6 +46,10 @@ mod imp {
         pub(crate) texturedstyle_distribution_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub(crate) stroke_width_picker: TemplateChild<RnStrokeWidthPicker>,
+        #[template_child]
+        pub(crate) scribble_enable_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub(crate) scribble_sensitivity_row: TemplateChild<adw::SpinRow>,
     }
 
     #[glib::object_subclass]
@@ -433,6 +437,37 @@ impl RnBrushPage {
                         .distribution = brushpage.texturedstyle_dots_distribution();
                 }
             ));
+
+        // Scribble-to-Erase
+        imp.scribble_enable_row.get().connect_active_notify(clone!(
+            #[weak]
+            appwindow,
+            move |row| {
+                appwindow
+                    .engine_config()
+                    .write()
+                    .pens_config
+                    .brush_config
+                    .scribble_config
+                    .enable = row.is_active();
+            }
+        ));
+
+        imp.scribble_sensitivity_row
+            .get()
+            .connect_changed(clone!(
+                #[weak]
+                appwindow,
+                move |row| {
+                    appwindow
+                        .engine_config()
+                        .write()
+                        .pens_config
+                        .brush_config
+                        .scribble_config
+                        .sensitivity = row.value().round() as usize;
+                }
+            ));
     }
 
     pub(crate) fn refresh_ui(&self, appwindow: &RnAppWindow) {
@@ -451,6 +486,11 @@ impl RnBrushPage {
 
         self.set_brush_style(brush_config.style);
         self.set_buildertype(brush_config.builder_type);
+
+        imp.scribble_enable_row
+            .set_active(brush_config.scribble_config.enable);
+        imp.scribble_sensitivity_row
+            .set_value(brush_config.scribble_config.sensitivity as f64);
 
         match brush_config.style {
             BrushStyle::Marker => {

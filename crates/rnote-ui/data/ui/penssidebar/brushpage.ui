@@ -205,11 +205,40 @@ Results in the best looking handwriting.</property>
               </child>
             </object>
           </child>
+          <child>
+            <!-- Scribble-to-Erase options -->
+            <object class="AdwPreferencesGroup">
+              <property name="title" translatable="yes">Scribble-to-Erase</property>
+              <child>
+                <object class="AdwSwitchRow" id="scribble_enable_row">
+                  <property name="title" translatable="yes">Enable Scribble-to-Erase</property>
+                  <property name="subtitle" translatable="yes">Scratch back and forth over strokes or words to erase them</property>
+                </object>
+              </child>
+              <child>
+                <object class="AdwSpinRow" id="scribble_sensitivity_row">
+                  <property name="title" translatable="yes">Scribble Sensitivity</property>
+                  <property name="subtitle" translatable="yes">Required direction reversals (higher requires more scribbling)</property>
+                  <property name="adjustment">scribble_sensitivity_adj</property>
+                  <property name="numeric">true</property>
+                  <property name="digits">0</property>
+                  <property name="climb-rate">1</property>
+                </object>
+              </child>
+            </object>
+          </child>
         </object>
       </child>
     </object>
     <object class="GtkAdjustment" id="texturedstyle_density_adj">
       <property name="step-increment">0.1</property>
+      <property name="page-increment">2</property>
+    </object>
+    <object class="GtkAdjustment" id="scribble_sensitivity_adj">
+      <property name="lower">3</property>
+      <property name="upper">16</property>
+      <property name="value">6</property>
+      <property name="step-increment">1</property>
       <property name="page-increment">2</property>
     </object>
   </template>
