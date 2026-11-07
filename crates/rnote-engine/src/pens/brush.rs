@@ -321,49 +321,70 @@ impl PenBehaviour for Brush {
                             let scribble_bounds = scribble_analysis.bounds;
                             let candidate_keys: Vec<StrokeKey> = engine_view
                                 .store
-                                .keys_unordered_intersecting_bounds(scribble_bounds)
+                                .stroke_keys_as_rendered_intersecting_bounds(scribble_bounds.loosened(12.0))
                                 .into_iter()
                                 .filter(|&k| k != *current_stroke_key)
                                 .collect();
 
+                            let mut candidate_hitboxes = Vec::new();
                             let mut candidate_points = Vec::new();
+                            let mut directly_colliding_keys = Vec::new();
+
                             for &k in &candidate_keys {
-                                if let Some(Stroke::BrushStroke(s)) =
-                                    engine_view.store.get_stroke_ref(k)
-                                {
-                                    candidate_points.push(s.path.start.pos);
-                                    for seg in &s.path.segments {
-                                        match seg {
-                                            Segment::LineTo { end } => {
-                                                candidate_points.push(end.pos);
-                                            }
-                                            Segment::QuadBezTo { cp, end } => {
-                                                candidate_points.push(*cp);
-                                                candidate_points.push(end.pos);
-                                            }
-                                            Segment::CubBezTo { cp1, cp2, end } => {
-                                                candidate_points.push(*cp1);
-                                                candidate_points.push(*cp2);
-                                                candidate_points.push(end.pos);
+                                if let Some(s) = engine_view.store.get_stroke_ref(k) {
+                                    let hitboxes = s.hitboxes();
+                                    let collides = hitboxes.is_empty()
+                                        || hitboxes
+                                            .iter()
+                                            .any(|hb| scribble_bounds.intersects(&hb.loosened(12.0)));
+                                    if collides {
+                                        directly_colliding_keys.push(k);
+                                    }
+                                    candidate_hitboxes.extend(hitboxes);
+
+                                    if let Stroke::BrushStroke(bs) = s {
+                                        candidate_points.push(bs.path.start.pos);
+                                        for seg in &bs.path.segments {
+                                            match seg {
+                                                Segment::LineTo { end } => {
+                                                    candidate_points.push(end.pos)
+                                                }
+                                                Segment::QuadBezTo { end, .. } => {
+                                                    candidate_points.push(end.pos)
+                                                }
+                                                Segment::CubBezTo { end, .. } => {
+                                                    candidate_points.push(end.pos)
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
 
-                            if crate::pens::ScribbleDetector::passes_ink_gate(
-                                &stroke_points,
-                                &candidate_points,
-                                scribble_config.ink_gate_proximity_px,
-                                scribble_config.ink_gate_threshold,
-                            ) {
+                            let passes_gate = !directly_colliding_keys.is_empty()
+                                && (candidate_hitboxes.is_empty()
+                                    || crate::pens::ScribbleDetector::passes_ink_gate_hitboxes(
+                                        &stroke_points,
+                                        &candidate_hitboxes,
+                                        scribble_config.ink_gate_proximity_px,
+                                        scribble_config.ink_gate_threshold,
+                                    )
+                                    || (!candidate_points.is_empty()
+                                        && crate::pens::ScribbleDetector::passes_ink_gate(
+                                            &stroke_points,
+                                            &candidate_points,
+                                            scribble_config.ink_gate_proximity_px,
+                                            scribble_config.ink_gate_threshold,
+                                        )));
+
+                            if passes_gate {
                                 let keys_to_trash = match scribble_config.mode {
-                                    crate::pens::ScribbleMode::Stroke => candidate_keys,
+                                    crate::pens::ScribbleMode::Stroke => directly_colliding_keys,
                                     crate::pens::ScribbleMode::Word => {
                                         let stroke_bounds_and_keys: Vec<(StrokeKey, Aabb)> =
                                             candidate_keys
-                                                .into_iter()
-                                                .filter_map(|k| {
+                                                .iter()
+                                                .filter_map(|&k| {
                                                     engine_view
                                                         .store
                                                         .get_stroke_ref(k)
@@ -373,8 +394,8 @@ impl PenBehaviour for Brush {
                                         let clusters =
                                             crate::pens::scribble::WordGroup::cluster_words(
                                                 &stroke_bounds_and_keys,
-                                                20.0,
-                                                1.2,
+                                                24.0,
+                                                1.5,
                                             );
                                         let mut trashing = Vec::new();
                                         for cluster in clusters {
@@ -382,17 +403,28 @@ impl PenBehaviour for Brush {
                                                 trashing.extend(cluster.keys);
                                             }
                                         }
-                                        trashing
+                                        if trashing.is_empty() {
+                                            directly_colliding_keys
+                                        } else {
+                                            trashing
+                                        }
                                     }
                                     crate::pens::ScribbleMode::Line => candidate_keys,
                                 };
 
                                 if !keys_to_trash.is_empty() {
+                                    tracing::info!(
+                                        "Scribble-to-erase: trashing {} stroke(s)",
+                                        keys_to_trash.len()
+                                    );
                                     engine_view.store.set_trashed_keys(&keys_to_trash, true);
                                     engine_view.store.remove_stroke(*current_stroke_key);
                                     self.state = BrushState::Idle;
                                     widget_flags |= engine_view.store.record(Instant::now());
                                     widget_flags.store_modified = true;
+                                    widget_flags.redraw = true;
+                                    widget_flags.resize = true;
+                                    widget_flags.refresh_ui = true;
                                     return (
                                         EventResult {
                                             handled,

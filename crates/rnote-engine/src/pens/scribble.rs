@@ -72,11 +72,11 @@ impl Default for ScribbleConfig {
             sensitivity: 4,
             mode: ScribbleMode::Word,
             strike_through: false,
-            path_to_diag_ratio: 3.2,
-            coverage_threshold: 0.50,
-            ink_gate_threshold: 0.60,
-            ink_gate_proximity_px: 18.0,
-            max_duration_secs: 1.5,
+            path_to_diag_ratio: 2.0,
+            coverage_threshold: 0.25,
+            ink_gate_threshold: 0.20,
+            ink_gate_proximity_px: 24.0,
+            max_duration_secs: 3.5,
         }
     }
 }
@@ -203,7 +203,7 @@ impl ScribbleDetector {
 
     /// Count direction reversals where cosine of turning angle < cos_threshold.
     ///
-    /// For 120-130 degree turning reversals: cos(130 deg) ≈ -0.6428.
+    /// For 90 degree turning reversals: cos(90 deg) = 0.0.
     pub fn count_reversals(simplified: &[Vector2], cos_threshold: f64) -> usize {
         if simplified.len() < 3 {
             return 0;
@@ -224,6 +224,106 @@ impl ScribbleDetector {
             }
         }
         reversals
+    }
+
+
+    fn count_1d_reversals(projections: &[f64], min_amplitude: f64) -> usize {
+        let min_proj = projections.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_proj = projections.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let span = max_proj - min_proj;
+        if span < min_amplitude {
+            return 0;
+        }
+
+        let hysteresis = (span * 0.18).max(4.0);
+        let mut reversals = 0;
+        enum Dir {
+            Init,
+            Increasing(f64),
+            Decreasing(f64),
+        }
+        let mut state = Dir::Init;
+        let init_val = projections[0];
+
+        for &val in &projections[1..] {
+            match state {
+                Dir::Init => {
+                    if val - init_val >= hysteresis {
+                        state = Dir::Increasing(val);
+                    } else if init_val - val >= hysteresis {
+                        state = Dir::Decreasing(val);
+                    }
+                }
+                Dir::Increasing(peak) => {
+                    if val > peak {
+                        state = Dir::Increasing(val);
+                    } else if peak - val >= hysteresis {
+                        reversals += 1;
+                        state = Dir::Decreasing(val);
+                    }
+                }
+                Dir::Decreasing(valley) => {
+                    if val < valley {
+                        state = Dir::Decreasing(val);
+                    } else if val - valley >= hysteresis {
+                        reversals += 1;
+                        state = Dir::Increasing(val);
+                    }
+                }
+            }
+        }
+
+        if reversals < 3 {
+            0
+        } else {
+            reversals
+        }
+    }
+
+    /// Count directional oscillations / reversals along the principal and perpendicular axes of the stroke.
+    /// This is robust against rounded corners from Google stroke-modeler and orientation variations.
+    pub fn count_principal_reversals(points: &[Vector2], min_amplitude: f64) -> usize {
+        if points.len() < 4 {
+            return 0;
+        }
+
+        let mut mean_x = 0.0;
+        let mut mean_y = 0.0;
+        for p in points {
+            mean_x += p.x;
+            mean_y += p.y;
+        }
+        mean_x /= points.len() as f64;
+        mean_y /= points.len() as f64;
+
+        let mut c_xx = 0.0;
+        let mut c_yy = 0.0;
+        let mut c_xy = 0.0;
+        for p in points {
+            let dx = p.x - mean_x;
+            let dy = p.y - mean_y;
+            c_xx += dx * dx;
+            c_yy += dy * dy;
+            c_xy += dx * dy;
+        }
+
+        let phi = 0.5 * (2.0 * c_xy).atan2(c_xx - c_yy);
+        let u = Vector2::new(phi.cos(), phi.sin());
+        let v = Vector2::new(-u.y, u.x);
+
+        let proj_u: Vec<f64> = points
+            .iter()
+            .map(|p| (p.x - mean_x) * u.x + (p.y - mean_y) * u.y)
+            .collect();
+        let proj_v: Vec<f64> = points
+            .iter()
+            .map(|p| (p.x - mean_x) * v.x + (p.y - mean_y) * v.y)
+            .collect();
+
+        let rev_u = Self::count_1d_reversals(&proj_u, min_amplitude);
+        let rev_v = Self::count_1d_reversals(&proj_v, min_amplitude);
+
+        rev_u.max(rev_v)
     }
 
     /// Analyze a stroke's geometric trajectory and verify scribble criteria.
@@ -256,11 +356,14 @@ impl ScribbleDetector {
             path_len += (w[1] - w[0]).length();
         }
 
-        // 2. RDP simplification with epsilon ~ 4.0
-        let simplified = Self::rdp_simplify(&resampled, 4.0);
+        // 2. RDP simplification with epsilon ~ 3.0
+        let simplified = Self::rdp_simplify(&resampled, 3.0);
 
-        // 3. Count sharp directional reversals (turning angle > ~130°, cos < -0.65)
-        let reversal_count = Self::count_reversals(&simplified, -0.65);
+        // 3. Count directional reversals: combine angle reversals (for sharp corners)
+        // and principal axis oscillations (for smoothed/modeled curves).
+        let reversal_ang = Self::count_reversals(&simplified, -0.35); // turning angle > ~110°
+        let reversal_pca = Self::count_principal_reversals(&resampled, 8.0);
+        let reversal_count = reversal_ang.max(reversal_pca);
 
         // Duration guard: Scribbles are rapid gestures (< max_duration_secs)
         let duration_valid = duration_secs <= config.max_duration_secs;
@@ -276,18 +379,17 @@ impl ScribbleDetector {
         let is_zigzag_scribble = duration_valid
             && reversal_count >= config.sensitivity
             && ratio >= config.path_to_diag_ratio
-            && extents.x > 8.0
-            && extents.y > 6.0;
+            && diagonal >= 10.0;
 
         // Strike-through criterion (optional horizontal strike)
         let is_strike_through = if config.strike_through && duration_valid {
-            let is_horizontal = extents.x > 30.0 && extents.y < 12.0;
+            let is_horizontal = extents.x > 25.0 && extents.y < 15.0;
             let straightness = if path_len > 1e-3 {
                 extents.x / path_len
             } else {
                 0.0
             };
-            is_horizontal && straightness > 0.85 && reversal_count <= 1
+            is_horizontal && straightness > 0.80 && reversal_count <= 1
         } else {
             false
         };
@@ -305,7 +407,7 @@ impl ScribbleDetector {
     }
 
     /// Evaluate the Ink Gate: verify that >= ink_gate_threshold of scribble points
-    /// are situated within distance of existing ink strokes.
+    /// are situated within distance of existing ink strokes (points or line segments).
     pub fn passes_ink_gate(
         scribble_points: &[Vector2],
         existing_stroke_points: &[Vector2],
@@ -320,9 +422,52 @@ impl ScribbleDetector {
         let mut on_ink_count = 0;
 
         for sp in scribble_points {
-            let hits = existing_stroke_points
-                .iter()
-                .any(|ep| (*sp - *ep).length_squared() <= radius_sq);
+            let hits = if existing_stroke_points.len() == 1 {
+                (*sp - existing_stroke_points[0]).length_squared() <= radius_sq
+            } else {
+                existing_stroke_points.windows(2).any(|w| {
+                    let a = w[0];
+                    let b = w[1];
+                    let ab = b - a;
+                    let l2 = ab.length_squared();
+                    if l2 < 1e-6 {
+                        (*sp - a).length_squared() <= radius_sq
+                    } else {
+                        let t = ((*sp - a).dot(ab) / l2).clamp(0.0, 1.0);
+                        let proj = a + ab * t;
+                        (*sp - proj).length_squared() <= radius_sq
+                    }
+                })
+            };
+
+            if hits {
+                on_ink_count += 1;
+            }
+        }
+
+        let ratio = on_ink_count as f64 / scribble_points.len() as f64;
+        ratio >= gate_threshold
+    }
+
+    /// Direct evaluation of ink gate using stroke bounding hitboxes.
+    pub fn passes_ink_gate_hitboxes(
+        scribble_points: &[Vector2],
+        candidate_hitboxes: &[Aabb],
+        proximity_radius: f64,
+        gate_threshold: f64,
+    ) -> bool {
+        if scribble_points.is_empty() || candidate_hitboxes.is_empty() {
+            return false;
+        }
+
+        let mut on_ink_count = 0;
+        for &sp in scribble_points {
+            let hits = candidate_hitboxes.iter().any(|hb| {
+                sp.x >= hb.mins.x - proximity_radius
+                    && sp.x <= hb.maxs.x + proximity_radius
+                    && sp.y >= hb.mins.y - proximity_radius
+                    && sp.y <= hb.maxs.y + proximity_radius
+            });
             if hits {
                 on_ink_count += 1;
             }
