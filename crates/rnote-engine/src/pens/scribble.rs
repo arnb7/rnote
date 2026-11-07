@@ -72,11 +72,11 @@ impl Default for ScribbleConfig {
             sensitivity: 4,
             mode: ScribbleMode::Word,
             strike_through: false,
-            path_to_diag_ratio: 2.0,
-            coverage_threshold: 0.25,
-            ink_gate_threshold: 0.20,
-            ink_gate_proximity_px: 24.0,
-            max_duration_secs: 3.5,
+            path_to_diag_ratio: 2.5,
+            coverage_threshold: 0.35,
+            ink_gate_threshold: 0.35,
+            ink_gate_proximity_px: 16.0,
+            max_duration_secs: 2.2,
         }
     }
 }
@@ -235,7 +235,7 @@ impl ScribbleDetector {
             return 0;
         }
 
-        let hysteresis = (span * 0.18).max(4.0);
+        let hysteresis = (span * 0.22).max(7.0);
         let mut reversals = 0;
         enum Dir {
             Init,
@@ -361,8 +361,8 @@ impl ScribbleDetector {
 
         // 3. Count directional reversals: combine angle reversals (for sharp corners)
         // and principal axis oscillations (for smoothed/modeled curves).
-        let reversal_ang = Self::count_reversals(&simplified, -0.35); // turning angle > ~110°
-        let reversal_pca = Self::count_principal_reversals(&resampled, 8.0);
+        let reversal_ang = Self::count_reversals(&simplified, -0.55); // turning angle > ~123°
+        let reversal_pca = Self::count_principal_reversals(&resampled, 14.0);
         let reversal_count = reversal_ang.max(reversal_pca);
 
         // Duration guard: Scribbles are rapid gestures (< max_duration_secs)

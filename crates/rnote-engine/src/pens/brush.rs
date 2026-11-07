@@ -394,12 +394,16 @@ impl PenBehaviour for Brush {
                                         let clusters =
                                             crate::pens::scribble::WordGroup::cluster_words(
                                                 &stroke_bounds_and_keys,
-                                                24.0,
-                                                1.5,
+                                                18.0,
+                                                1.0,
                                             );
                                         let mut trashing = Vec::new();
                                         for cluster in clusters {
-                                            if cluster.bounds.intersects(&scribble_bounds) {
+                                            if cluster
+                                                .keys
+                                                .iter()
+                                                .any(|k| directly_colliding_keys.contains(k))
+                                            {
                                                 trashing.extend(cluster.keys);
                                             }
                                         }
