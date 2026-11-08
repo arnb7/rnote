@@ -26,15 +26,69 @@ mod imp {
 
     impl Default for RnApp {
         fn default() -> Self {
-            let app_settings = gio::SettingsSchemaSource::default().and_then(|schema_source| {
-                Some(gio::Settings::new_full(
-                    &schema_source.lookup(config::APP_ID, true)?,
-                    None::<&gio::SettingsBackend>,
-                    None,
-                ))
-            });
-
+            let app_settings = Self::init_app_settings();
             Self { app_settings }
+        }
+    }
+
+    impl RnApp {
+        fn init_app_settings() -> Option<gio::Settings> {
+            let default_source = gio::SettingsSchemaSource::default();
+
+            // 1. Default system schema source
+            if let Some(source) = &default_source {
+                if let Some(schema) = source.lookup(config::APP_ID, true) {
+                    return Some(gio::Settings::new_full(
+                        &schema,
+                        None::<&gio::SettingsBackend>,
+                        None,
+                    ));
+                }
+            }
+
+            // 2. User schemas directory (~/.local/share/glib-2.0/schemas)
+            let user_schema_dir = glib::user_data_dir().join("glib-2.0").join("schemas");
+            if user_schema_dir.exists() {
+                if let Ok(user_source) = gio::SettingsSchemaSource::from_directory(
+                    &user_schema_dir,
+                    default_source.as_ref(),
+                    false,
+                ) {
+                    if let Some(schema) = user_source.lookup(config::APP_ID, true) {
+                        return Some(gio::Settings::new_full(
+                            &schema,
+                            None::<&gio::SettingsBackend>,
+                            None,
+                        ));
+                    }
+                }
+            }
+
+            // 3. Application bundle / data directories
+            if let Ok(exe_path) = std::env::current_exe() {
+                if let Some(exe_dir) = exe_path.parent() {
+                    for rel in &["../share/glib-2.0/schemas", "share/glib-2.0/schemas"] {
+                        let candidate = exe_dir.join(rel);
+                        if candidate.exists() {
+                            if let Ok(app_source) = gio::SettingsSchemaSource::from_directory(
+                                &candidate,
+                                default_source.as_ref(),
+                                false,
+                            ) {
+                                if let Some(schema) = app_source.lookup(config::APP_ID, true) {
+                                    return Some(gio::Settings::new_full(
+                                        &schema,
+                                        None::<&gio::SettingsBackend>,
+                                        None,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            None
         }
     }
 

@@ -450,6 +450,7 @@ impl RnBrushPage {
                     .brush_config
                     .scribble_config
                     .enable = row.is_active();
+                let _ = appwindow.save_to_settings();
             }
         ));
 
@@ -466,6 +467,7 @@ impl RnBrushPage {
                         .brush_config
                         .scribble_config
                         .sensitivity = row.value().round() as usize;
+                    let _ = appwindow.save_to_settings();
                 }
             ));
     }

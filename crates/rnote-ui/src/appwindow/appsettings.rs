@@ -2,7 +2,7 @@
 use crate::appwindow::RnAppWindow;
 use adw::{prelude::*, subclass::prelude::*};
 use gtk4::{gdk, glib, glib::clone};
-use tracing::error;
+use tracing::{debug, error};
 
 impl RnAppWindow {
     /// Setup settings binds.
@@ -402,48 +402,77 @@ impl RnAppWindow {
         Ok(())
     }
 
+    fn config_file_path() -> std::path::PathBuf {
+        let config_dir = glib::user_config_dir().join("rnote");
+        let _ = std::fs::create_dir_all(&config_dir);
+        config_dir.join("engine-config.json")
+    }
+
+    pub(crate) fn load_global_config_from_file(&self) -> anyhow::Result<()> {
+        let path = Self::config_file_path();
+        if path.exists() {
+            let data = std::fs::read_to_string(&path)?;
+            let engine_config = serde_json::from_str::<rnote_engine::engine::EngineConfig>(&data)?;
+            self.engine_config().load_values(engine_config);
+            debug!("Successfully loaded engine configuration from fallback file: {path:?}");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn save_global_config_to_file(&self) -> anyhow::Result<()> {
+        let path = Self::config_file_path();
+        let json_str = serde_json::to_string_pretty(self.engine_config())?;
+        std::fs::write(&path, json_str)?;
+        debug!("Successfully saved engine configuration to fallback file: {path:?}");
+        Ok(())
+    }
+
     /// Load settings that are not bound as binds.
     ///
     /// Settings changes through gsettings / dconf might not be applied until the app restarts.
     pub(crate) fn load_settings(&self) -> anyhow::Result<()> {
         let app = self.app();
-        let app_settings = app
-            .app_settings()
-            .ok_or_else(|| anyhow::anyhow!("Settings schema not found."))?;
+        if let Some(app_settings) = app.app_settings() {
+            {
+                // Appwindow
+                let window_width = app_settings.int("window-width");
+                let window_height = app_settings.int("window-height");
+                let is_maximized = app_settings.boolean("is-maximized");
 
-        {
-            // Appwindow
-            let window_width = app_settings.int("window-width");
-            let window_height = app_settings.int("window-height");
-            let is_maximized = app_settings.boolean("is-maximized");
+                if is_maximized {
+                    self.maximize();
+                } else {
+                    self.set_default_size(window_width, window_height);
+                }
 
-            if is_maximized {
-                self.maximize();
-            } else {
-                self.set_default_size(window_width, window_height);
+                // set the color-scheme through the action
+                let color_scheme = app_settings.string("color-scheme");
+                self.app()
+                    .activate_action("color-scheme", Some(&color_scheme.to_variant()));
             }
 
-            // set the color-scheme through the action
-            let color_scheme = app_settings.string("color-scheme");
-            self.app()
-                .activate_action("color-scheme", Some(&color_scheme.to_variant()));
-        }
+            {
+                // Workspaces bar
+                self.sidebar()
+                    .workspacebrowser()
+                    .workspacesbar()
+                    .load_from_settings(&app_settings);
+            }
 
-        {
-            // Workspaces bar
-            self.sidebar()
-                .workspacebrowser()
-                .workspacesbar()
-                .load_from_settings(&app_settings);
-        }
-
-        {
-            // Global config
-            if let Err(err) = self.load_global_config_from_settings(&app_settings) {
-                error!(
-                    "Failed to load engine configuration from app settings, using defaults. Err: {err:?}"
-                );
-            };
+            {
+                // Global config
+                if let Err(err) = self.load_global_config_from_settings(&app_settings) {
+                    error!(
+                        "Failed to load engine configuration from app settings, attempting fallback file. Err: {err:?}"
+                    );
+                    let _ = self.load_global_config_from_file();
+                };
+            }
+        } else {
+            // GSettings unavailable: load directly from fallback file
+            if let Err(err) = self.load_global_config_from_file() {
+                debug!("Fallback config file not loaded: {err:?}");
+            }
         }
 
         Ok(())
@@ -452,32 +481,35 @@ impl RnAppWindow {
     /// Save settings that are not bound as binds.
     pub(crate) fn save_to_settings(&self) -> anyhow::Result<()> {
         let app = self.app();
-        let app_settings = app
-            .app_settings()
-            .ok_or_else(|| anyhow::anyhow!("Settings schema not found."))?;
+        if let Some(app_settings) = app.app_settings() {
+            {
+                // Appwindow
+                let _ = app_settings.set_boolean("is-maximized", self.is_maximized());
+                if !self.is_maximized() {
+                    let _ = app_settings.set_int("window-width", self.width());
+                    let _ = app_settings.set_int("window-height", self.height());
+                }
+            }
 
-        {
-            // Appwindow
-            app_settings.set_boolean("is-maximized", self.is_maximized())?;
-            if !self.is_maximized() {
-                app_settings.set_int("window-width", self.width())?;
-                app_settings.set_int("window-height", self.height())?;
+            {
+                // Save global config
+                if let Err(err) = self.save_global_config_to_settings(&app_settings) {
+                    error!("Unable to save global configuration to app settings, Err: {err:?}");
+                }
+            }
+
+            {
+                // Workspaces list
+                self.sidebar()
+                    .workspacebrowser()
+                    .workspacesbar()
+                    .save_to_settings(&app_settings);
             }
         }
 
-        {
-            // Save global config
-            if let Err(err) = self.save_global_config_to_settings(&app_settings) {
-                error!("Unable to save global configuration to app settings, Err: {err:?}");
-            }
-        }
-
-        {
-            // Workspaces list
-            self.sidebar()
-                .workspacebrowser()
-                .workspacesbar()
-                .save_to_settings(&app_settings);
+        // Always also save to local config file for complete persistence guarantee
+        if let Err(err) = self.save_global_config_to_file() {
+            error!("Unable to save global configuration to fallback file, Err: {err:?}");
         }
 
         Ok(())
@@ -485,9 +517,7 @@ impl RnAppWindow {
 
     pub(crate) fn setup_periodic_save(&self) -> anyhow::Result<()> {
         let app = self.app();
-        let app_settings = app
-            .app_settings()
-            .ok_or_else(|| anyhow::anyhow!("Settings schema not found."))?;
+        let app_settings = app.app_settings();
 
         if let Some(removed_id) = self
             .imp()
@@ -496,18 +526,19 @@ impl RnAppWindow {
             .replace(glib::source::timeout_add_seconds_local(
                 Self::PERIODIC_CONFIGSAVE_INTERVAL,
                 clone!(
-                    #[weak]
-                    app_settings,
                     #[weak(rename_to=appwindow)]
                     self,
                     #[upgrade_or]
                     glib::ControlFlow::Break,
                     move || {
-                        if let Err(e) = appwindow.save_global_config_to_settings(&app_settings) {
-                            error!(
-                                "Saving global config in periodic save task failed , Err: {e:?}"
-                            );
+                        if let Some(ref settings) = app_settings {
+                            if let Err(e) = appwindow.save_global_config_to_settings(settings) {
+                                error!(
+                                    "Saving global config in periodic save task failed, Err: {e:?}"
+                                );
+                            }
                         }
+                        let _ = appwindow.save_global_config_to_file();
 
                         glib::ControlFlow::Continue
                     }

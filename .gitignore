@@ -10,3 +10,4 @@
 *.mo
 .toggletasks.json
 *.flatpak
+*.AppImage

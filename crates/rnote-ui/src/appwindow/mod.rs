@@ -271,10 +271,12 @@ impl RnAppWindow {
         self.setup_action_accels();
 
         if !self.app().settings_schema_found() {
-            // Display an error toast if settings schema could not be found
-            self.overlays().dispatch_toast_error(&gettext(
-                "Settings schema is not installed. App settings could not be loaded and won't be saved.",
-            ));
+            if let Err(e) = self.setup_periodic_save() {
+                error!("Failed to setup periodic save, Err: {e:?}");
+            }
+            if let Err(e) = self.load_settings() {
+                error!("Failed to load initial settings, Err: {e:?}");
+            }
         } else {
             if let Err(e) = self.setup_settings_binds() {
                 error!("Failed to setup settings binds, Err: {e:?}");
@@ -306,11 +308,9 @@ impl RnAppWindow {
 
     /// Called to close the window
     pub(crate) fn close_force(&self) {
-        if self.app().settings_schema_found() {
-            // Saving all state
-            if let Err(e) = self.save_to_settings() {
-                error!("Failed to save appwindow to settings, Err: {e:?}");
-            }
+        // Saving all state (persists to GSettings and local fallback file)
+        if let Err(e) = self.save_to_settings() {
+            error!("Failed to save appwindow to settings, Err: {e:?}");
         }
 
         // Closing the state tasks channel receiver for all tabs
